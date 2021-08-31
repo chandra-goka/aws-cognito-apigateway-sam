@@ -1,0 +1,159 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Transform: AWS::Serverless-2016-10-31
+Description: >
+  Cognito Serverless Platform AWS Backend
+Parameters:
+  Stage:
+    Type: String
+    Default: dev
+
+Globals:
+  Function:
+    Timeout: 300
+    Runtime: python3.8
+    Layers:
+      - !Ref PythonDepLayer
+    CodeUri: ./cognito_serverless_platform
+    Tracing: Active
+    Environment:
+      Variables:
+        STAGE: !Ref Stage
+
+Resources:
+  PythonDepLayer:
+    Type: AWS::Serverless::LayerVersion
+    Properties:
+      LayerName: !Sub "${Stage}-cognito-serverless-platform-dep-layer"
+      CompatibleRuntimes:
+        - python3.8
+      ContentUri: ./.build/dependencies
+      RetentionPolicy: Delete
+
+  CategoriesLambda:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub ${Stage}-categories-function
+      Description: !Sub ${Stage}-categories lambda function
+      Handler: src.categories.handle
+      Role: !GetAtt CognitoPlatformLambdaRole.Arn
+      Events:
+        CategoriesApi:
+          Type: Api
+          Properties:
+            RestApiId: !Ref CognitoPlatformApi
+            Path: /categories
+            Method: GET
+
+  CognitoPlatformLambdaRole:
+    Type: AWS::IAM::Role
+    Properties:
+      ManagedPolicyArns:
+        - 'arn:aws:iam::aws:policy/service-role/AWSLambdaRole'
+        - 'arn:aws:iam::aws:policy/AWSLambdaExecute'
+        - 'arn:aws:iam::aws:policy/AmazonSSMReadOnlyAccess'
+        - 'arn:aws:iam::aws:policy/AmazonSQSFullAccess'
+        - 'arn:aws:iam::aws:policy/AmazonS3FullAccess'
+        - 'arn:aws:iam::aws:policy/AmazonDynamoDBFullAccess'
+#        - 'arn:aws:iam::aws:policy/AmazonCognitoDeveloperAuthenticatedIdentities'
+        - 'arn:aws:iam::aws:policy/AmazonCognitoPowerUser'
+        - 'arn:aws:iam::aws:policy/AmazonKinesisFirehoseFullAccess'
+        - 'arn:aws:iam::aws:policy/AmazonTimestreamFullAccess'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - 'lambda.amazonaws.com'
+            Action:
+              - 'sts:AssumeRole'
+      Policies:
+        - PolicyName: 'SecretsManagerParameterAccess'
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - ssm:GetParam*
+                  - ssm:DescribeParam*
+                  - kms:GetSecretValue
+                  - kms:Decrypt
+                Resource:
+                  - arn:aws:ssm:*:*:parameter/*
+
+  CognitoPlatformApi:
+    Type: AWS::Serverless::Api
+    DependsOn: CognitoUserPoolClient
+    Properties:
+      Name: !Sub "${Stage}-Cognito-Platform-Api-Gateway"
+      StageName: !Ref Stage
+      Auth:
+        DefaultAuthorizer: CustomCognitoAuthorizer
+        Authorizers:
+          CustomCognitoAuthorizer:
+            UserPoolArn: !GetAtt CognitoUserPool.Arn
+            AuthorizationScopes:
+              - access_points/read
+              - access_points/write
+
+  CognitoUserPool:
+    Type: AWS::Cognito::UserPool
+    Properties:
+      UserPoolName: !Sub ${Stage}-Cognito-User-Pool
+
+  CognitoDomainNameResourceServer:
+    Type: AWS::Cognito::UserPoolResourceServer
+    Properties:
+      Identifier: access_points
+      Name: !Sub ${Stage}-resource-server
+      Scopes:
+        - ScopeDescription: "Read Resources"
+          ScopeName: "read"
+        - ScopeDescription: "Write Resources"
+          ScopeName: "write"
+        - ScopeDescription: "Delete Resources"
+          ScopeName: "delete"
+        - ScopeDescription: "Update Resources"
+          ScopeName: "update"
+      UserPoolId: !Ref CognitoUserPool
+
+  CognitoUserPoolClient:
+    Type: AWS::Cognito::UserPoolClient
+    DependsOn: CognitoDomainNameResourceServer
+    Properties:
+      UserPoolId: !Ref CognitoUserPool
+      ClientName: !Sub ${Stage}-CognitoUserPoolClient
+      GenerateSecret: true
+      AllowedOAuthFlowsUserPoolClient: true
+      AllowedOAuthFlows:
+        - client_credentials
+      SupportedIdentityProviders:
+        - COGNITO
+      AllowedOAuthScopes:
+        - access_points/read
+        - access_points/delete
+        - access_points/update
+        - access_points/write
+
+  CognitoDomainName:
+    Type: AWS::Cognito::UserPoolDomain
+    Properties:
+      Domain: !Sub ${Stage}-domain
+      UserPoolId: !Ref CognitoUserPool
+
+Outputs:
+  CognitoPlatformApi:
+    Description: 'API Gateway endpoint URL'
+    Value: !Sub 'https://${CognitoPlatformApi}.execute-api.${AWS::Region}.amazonaws.com/${Stage}/'
+  CognitoDomainName:
+    Description: 'CognitoDomainName URL'
+    Value: !Sub 'https://${CognitoDomainName}.auth.${AWS::Region}.amazoncognito.com'
+  CognitoPlatformApiRestApiId:
+    Description: 'API Gateway ARN for Basic AWS API Gateway'
+    Value: !Ref CognitoPlatformApi
+    Export:
+      Name: !Sub ${Stage}-CognitoPlatformApi-RestApiId
+  CognitoPlatformApiRootResourceId:
+    Value: !GetAtt CognitoPlatformApi.RootResourceId
+    Export:
+      Name: !Sub ${Stage}-CognitoPlatformApi-RootResourceId
